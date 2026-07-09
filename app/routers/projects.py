@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session, joinedload
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.deps import get_current_user, require_project_access, require_project_owner
 from app.models import Project, ProjectAccess, ProjectRole, User
 from app.schemas import DocumentOut, ProjectCreate, ProjectFull, ProjectInfo, ProjectUpdate
-from app.storage import get_storage
+from app.services import project_service
 
 router = APIRouter(tags=["projects"])
 
@@ -35,13 +35,7 @@ def create_project(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProjectInfo:
-    project = Project(name=payload.name, description=payload.description, owner_id=user.id)
-    db.add(project)
-    db.flush()
-
-    db.add(ProjectAccess(project_id=project.id, user_id=user.id, role=ProjectRole.owner))
-    db.commit()
-    db.refresh(project)
+    project = project_service.create_project(db, user, payload.name, payload.description)
     return _project_info(project, ProjectRole.owner)
 
 
@@ -50,12 +44,7 @@ def list_projects(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[ProjectFull]:
-    accesses = (
-        db.query(ProjectAccess)
-        .filter(ProjectAccess.user_id == user.id)
-        .options(joinedload(ProjectAccess.project).joinedload(Project.documents))
-        .all()
-    )
+    accesses = project_service.list_accesses_for_user(db, user)
     return [_project_full(access.project, access.role) for access in accesses]
 
 
@@ -70,11 +59,9 @@ def update_project_info(
     access: ProjectAccess = Depends(require_project_access),
     db: Session = Depends(get_db),
 ) -> ProjectInfo:
-    project = access.project
-    project.name = payload.name
-    project.description = payload.description
-    db.commit()
-    db.refresh(project)
+    project = project_service.update_project_info(
+        db, access.project, payload.name, payload.description
+    )
     return _project_info(project, access.role)
 
 
@@ -83,10 +70,7 @@ def delete_project(
     access: ProjectAccess = Depends(require_project_owner),
     db: Session = Depends(get_db),
 ) -> None:
-    project = access.project
-    get_storage().delete_project_dir(project.id)
-    db.delete(project)
-    db.commit()
+    project_service.delete_project(db, access.project)
 
 
 @router.post(
@@ -97,21 +81,5 @@ def invite_user(
     access: ProjectAccess = Depends(require_project_owner),
     db: Session = Depends(get_db),
 ) -> ProjectInfo:
-    invitee = db.query(User).filter(User.login == user).first()
-    if invitee is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
-
-    existing = (
-        db.query(ProjectAccess)
-        .filter(ProjectAccess.project_id == access.project_id, ProjectAccess.user_id == invitee.id)
-        .first()
-    )
-    if existing is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "User already has access to this project")
-
-    new_access = ProjectAccess(
-        project_id=access.project_id, user_id=invitee.id, role=ProjectRole.participant
-    )
-    db.add(new_access)
-    db.commit()
+    project_service.invite_user(db, access, user)
     return _project_info(access.project, access.role)
