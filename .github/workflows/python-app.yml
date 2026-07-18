@@ -6,12 +6,10 @@ on:
   pull_request:
     branches: [main]
 
-# Allow pushing packages to GHCR using the built-in token, and minting an
-# OIDC token so the deploy jobs can assume an AWS role without static keys.
+# Allow pushing packages to GHCR using the built-in token.
 permissions:
   contents: read
   packages: write
-  id-token: write
 
 # Cancel in-progress runs for the same ref to save CI minutes
 concurrency:
@@ -107,25 +105,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Log in to Amazon ECR
-        id: ecr-login
-        uses: aws-actions/amazon-ecr-login@v2
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # Push the same image to both GHCR (free history/visibility) and
-          # ECR (what App Runner actually deploys from).
-          images: |
-            ghcr.io/${{ github.repository }}
-            ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}
+          # Image name is lowercased automatically: ghcr.io/<owner>/<repo>
+          images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
             type=sha,format=short
@@ -141,19 +126,20 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    name: Deploy to App Runner
+    name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: build-and-push
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: SSH in and redeploy
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Start App Runner deployment
-        run: |
-          aws apprunner start-deployment \
-            --service-arn "${{ vars.APP_RUNNER_SERVICE_ARN }}"
+          host: ${{ vars.EC2_HOST }}
+          username: ${{ vars.EC2_SSH_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/dashboard
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker image prune -f
