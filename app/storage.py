@@ -79,7 +79,11 @@ class S3DocumentStorage:
 
     def read(self, storage_key: str) -> bytes:
         response = self.client.get_object(Bucket=self.bucket, Key=storage_key)
-        return response["Body"].read()
+        body = response["Body"]
+        try:
+            return body.read()
+        finally:
+            body.close()
 
     def delete(self, storage_key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=storage_key)
