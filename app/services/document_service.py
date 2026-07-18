@@ -1,8 +1,10 @@
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import Document, User
 from app.services.project_service import get_project_access
 from app.storage import get_storage
@@ -19,6 +21,24 @@ def _validate_extension(filename: str | None) -> None:
         )
 
 
+def _user_storage_used(db: Session, user_id: int) -> int:
+    total = (
+        db.query(func.sum(Document.size_bytes)).filter(Document.uploaded_by_id == user_id).scalar()
+    )
+    return total or 0
+
+
+def _enforce_upload_quota(db: Session, user_id: int, additional_bytes: int) -> None:
+    limit = get_settings().max_user_upload_bytes
+    used = _user_storage_used(db, user_id)
+    if used + additional_bytes > limit:
+        raise HTTPException(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            f"This upload would exceed your {limit // (1024 * 1024)} MB storage limit "
+            f"({used / (1024 * 1024):.1f} MB already used).",
+        )
+
+
 def list_documents(db: Session, project_id: int) -> list[Document]:
     return db.query(Document).filter(Document.project_id == project_id).order_by(Document.id).all()
 
@@ -29,20 +49,25 @@ async def create_documents(
     for file in files:
         _validate_extension(file.filename)
 
+    contents = [await file.read() for file in files]
+    _enforce_upload_quota(db, uploader_id, sum(len(content) for content in contents))
+
     storage = get_storage()
     created: list[Document] = []
-    for file in files:
-        content = await file.read()
-        storage_key = storage.save(project_id, file.filename or "document", content)
+    for file, content in zip(files, contents, strict=True):
+        filename = file.filename or "document"
         document = Document(
             project_id=project_id,
-            filename=file.filename or "document",
+            filename=filename,
             content_type=file.content_type or "application/octet-stream",
             size_bytes=len(content),
-            storage_key=storage_key,
+            storage_key="",
             uploaded_by_id=uploader_id,
         )
         db.add(document)
+        db.flush()  # assign document.id before it's used to build the storage key
+
+        document.storage_key = storage.save(project_id, document.id, filename, content)
         created.append(document)
 
     db.commit()
@@ -67,6 +92,8 @@ async def update_document(db: Session, document: Document, file: UploadFile) -> 
     _validate_extension(file.filename)
 
     content = await file.read()
+    if document.uploaded_by_id is not None:
+        _enforce_upload_quota(db, document.uploaded_by_id, len(content) - document.size_bytes)
     get_storage().overwrite(document.storage_key, content)
 
     document.filename = file.filename or document.filename

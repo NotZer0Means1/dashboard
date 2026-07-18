@@ -6,10 +6,12 @@ on:
   pull_request:
     branches: [main]
 
-# Allow pushing packages to GHCR using the built-in token
+# Allow pushing packages to GHCR using the built-in token, and minting an
+# OIDC token so the deploy jobs can assume an AWS role without static keys.
 permissions:
   contents: read
   packages: write
+  id-token: write
 
 # Cancel in-progress runs for the same ref to save CI minutes
 concurrency:
@@ -105,12 +107,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # Image name is lowercased automatically: ghcr.io/<owner>/<repo>
-          images: ghcr.io/${{ github.repository }}
+          # Push the same image to both GHCR (free history/visibility) and
+          # ECR (what App Runner actually deploys from).
+          images: |
+            ghcr.io/${{ github.repository }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}
           tags: |
             type=raw,value=latest
             type=sha,format=short
@@ -124,3 +139,21 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to App Runner
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Start App Runner deployment
+        run: |
+          aws apprunner start-deployment \
+            --service-arn "${{ vars.APP_RUNNER_SERVICE_ARN }}"

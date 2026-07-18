@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24
     storage_dir: Path = Path("storage")
 
+    storage_backend: str = "local"  # "local" or "s3"
+    aws_region: str = "us-east-1"
+    aws_s3_bucket: str = "dashboard-documents"
+
+    max_user_upload_bytes: int = 10 * 1024 * 1024
+
 
 @lru_cache
 def get_settings() -> Settings:
