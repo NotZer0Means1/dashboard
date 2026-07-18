@@ -20,15 +20,15 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://dashboard:dashboard@db:5432/dashboard
       JWT_SECRET: change-me
-      STORAGE_DIR: /data/storage
     ports:
       - "8000:8000"
-    volumes:
-      - storage_data:/data/storage
     depends_on:
       db:
         condition: service_healthy
 
+networks:
+  default:
+    name: dashboard_default
+
 volumes:
   db_data:
-  storage_data:
