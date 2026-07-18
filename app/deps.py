@@ -3,8 +3,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Document, ProjectAccess, ProjectRole, User
+from app.models import Document, ProjectAccess, User
 from app.security import decode_access_token
+from app.services import document_service, project_service, user_service
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -18,21 +19,10 @@ def get_current_user(
     login = decode_access_token(credentials.credentials)
     if login is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
-    user = db.query(User).filter(User.login == login).first()
+    user = user_service.get_user_by_login(db, login)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
     return user
-
-
-def _get_project_access(project_id: int, user: User, db: Session) -> ProjectAccess:
-    access = (
-        db.query(ProjectAccess)
-        .filter(ProjectAccess.project_id == project_id, ProjectAccess.user_id == user.id)
-        .first()
-    )
-    if access is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
-    return access
 
 
 def require_project_access(
@@ -40,7 +30,7 @@ def require_project_access(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProjectAccess:
-    return _get_project_access(project_id, user, db)
+    return project_service.get_project_access(db, project_id, user)
 
 
 def require_project_owner(
@@ -48,12 +38,8 @@ def require_project_owner(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProjectAccess:
-    access = _get_project_access(project_id, user, db)
-    if access.role != ProjectRole.owner:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "Only the project owner can perform this action"
-        )
-    return access
+    access = project_service.get_project_access(db, project_id, user)
+    return project_service.require_owner(access)
 
 
 def get_document_for_user(
@@ -61,8 +47,4 @@ def get_document_for_user(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Document:
-    document = db.query(Document).filter(Document.id == document_id).first()
-    if document is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
-    _get_project_access(document.project_id, user, db)
-    return document
+    return document_service.get_document_for_user(db, document_id, user)
