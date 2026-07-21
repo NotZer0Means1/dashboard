@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     aws_s3_bucket: str = "dashboard-documents"
 
-    max_user_upload_bytes: int = 10 * 1024 * 1024
+    max_user_upload_bytes_per_project: int = 10 * 1024 * 1024
 
 
 @lru_cache
