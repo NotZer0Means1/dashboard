@@ -3,8 +3,11 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
+from app.database import Base
 from app.models import Document, ProjectAccess, ProjectRole, User
 from app.services import document_service
 
@@ -54,39 +57,85 @@ def test_get_document_for_user_returns_document_when_access_granted():
     assert result is document
 
 
-def test_user_storage_used_returns_zero_when_no_documents():
+def test_user_project_storage_used_returns_zero_when_no_documents():
     db = MagicMock()
     db.query.return_value.filter.return_value.scalar.return_value = None
 
-    assert document_service._user_storage_used(db, user_id=1) == 0
+    assert document_service._user_project_storage_used(db, project_id=1, user_id=1) == 0
+
+
+def test_user_project_storage_used_only_counts_matching_user_and_project():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    try:
+        # Same user, other project; same project, other user; and the one that should count.
+        db.add_all(
+            [
+                Document(
+                    project_id=1,
+                    uploaded_by_id=1,
+                    filename="a.pdf",
+                    content_type="application/pdf",
+                    size_bytes=1_000_000,
+                    storage_key="1/1/a.pdf",
+                ),
+                Document(
+                    project_id=2,
+                    uploaded_by_id=1,
+                    filename="b.pdf",
+                    content_type="application/pdf",
+                    size_bytes=2_000_000,
+                    storage_key="2/2/b.pdf",
+                ),
+                Document(
+                    project_id=1,
+                    uploaded_by_id=2,
+                    filename="c.pdf",
+                    content_type="application/pdf",
+                    size_bytes=4_000_000,
+                    storage_key="1/3/c.pdf",
+                ),
+            ]
+        )
+        db.commit()
+
+        assert document_service._user_project_storage_used(db, project_id=1, user_id=1) == 1_000_000
+    finally:
+        db.close()
+        engine.dispose()
 
 
 def test_enforce_upload_quota_allows_when_within_limit(monkeypatch):
-    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
     get_settings.cache_clear()
     db = MagicMock()
     db.query.return_value.filter.return_value.scalar.return_value = 8 * 1024 * 1024
 
-    document_service._enforce_upload_quota(db, user_id=1, additional_bytes=1 * 1024 * 1024)
+    document_service._enforce_upload_quota(
+        db, project_id=1, user_id=1, additional_bytes=1 * 1024 * 1024
+    )
 
     get_settings.cache_clear()
 
 
 def test_enforce_upload_quota_raises_when_exceeding_limit(monkeypatch):
-    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
     get_settings.cache_clear()
     db = MagicMock()
     db.query.return_value.filter.return_value.scalar.return_value = 8 * 1024 * 1024
 
     with pytest.raises(HTTPException) as exc_info:
-        document_service._enforce_upload_quota(db, user_id=1, additional_bytes=3 * 1024 * 1024)
+        document_service._enforce_upload_quota(
+            db, project_id=1, user_id=1, additional_bytes=3 * 1024 * 1024
+        )
 
     assert exc_info.value.status_code == 413
     get_settings.cache_clear()
 
 
 def test_create_documents_raises_413_when_exceeding_quota(monkeypatch):
-    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
     get_settings.cache_clear()
     db = MagicMock()
     db.query.return_value.filter.return_value.scalar.return_value = 8 * 1024 * 1024
@@ -103,7 +152,7 @@ def test_create_documents_raises_413_when_exceeding_quota(monkeypatch):
 
 
 def test_create_documents_succeeds_when_within_quota(monkeypatch):
-    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
     get_settings.cache_clear()
     db = MagicMock()
     db.query.return_value.filter.return_value.scalar.return_value = 8 * 1024 * 1024
@@ -122,7 +171,7 @@ def test_create_documents_succeeds_when_within_quota(monkeypatch):
 
 
 def test_update_document_raises_413_when_replacement_exceeds_quota(monkeypatch):
-    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
     get_settings.cache_clear()
     document = Document(
         id=1, project_id=1, filename="report.pdf", size_bytes=1 * 1024 * 1024, uploaded_by_id=1
@@ -139,7 +188,7 @@ def test_update_document_raises_413_when_replacement_exceeds_quota(monkeypatch):
 
 
 def test_update_document_allows_replacement_within_quota(monkeypatch):
-    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES", str(10 * 1024 * 1024))
+    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
     get_settings.cache_clear()
     document = Document(
         id=1, project_id=1, filename="report.pdf", size_bytes=1 * 1024 * 1024, uploaded_by_id=1

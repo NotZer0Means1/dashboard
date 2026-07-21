@@ -21,21 +21,25 @@ def _validate_extension(filename: str | None) -> None:
         )
 
 
-def _user_storage_used(db: Session, user_id: int) -> int:
+def _user_project_storage_used(db: Session, project_id: int, user_id: int) -> int:
     total = (
-        db.query(func.sum(Document.size_bytes)).filter(Document.uploaded_by_id == user_id).scalar()
+        db.query(func.sum(Document.size_bytes))
+        .filter(Document.project_id == project_id, Document.uploaded_by_id == user_id)
+        .scalar()
     )
     return total or 0
 
 
-def _enforce_upload_quota(db: Session, user_id: int, additional_bytes: int) -> None:
-    limit = get_settings().max_user_upload_bytes
-    used = _user_storage_used(db, user_id)
+def _enforce_upload_quota(
+    db: Session, project_id: int, user_id: int, additional_bytes: int
+) -> None:
+    limit = get_settings().max_user_upload_bytes_per_project
+    used = _user_project_storage_used(db, project_id, user_id)
     if used + additional_bytes > limit:
         raise HTTPException(
             status.HTTP_413_CONTENT_TOO_LARGE,
             f"This upload would exceed your {limit // (1024 * 1024)} MB storage limit "
-            f"({used / (1024 * 1024):.1f} MB already used).",
+            f"for this project ({used / (1024 * 1024):.1f} MB already used).",
         )
 
 
@@ -50,7 +54,7 @@ async def create_documents(
         _validate_extension(file.filename)
 
     contents = [await file.read() for file in files]
-    _enforce_upload_quota(db, uploader_id, sum(len(content) for content in contents))
+    _enforce_upload_quota(db, project_id, uploader_id, sum(len(content) for content in contents))
 
     storage = get_storage()
     created: list[Document] = []
@@ -93,7 +97,9 @@ async def update_document(db: Session, document: Document, file: UploadFile) -> 
 
     content = await file.read()
     if document.uploaded_by_id is not None:
-        _enforce_upload_quota(db, document.uploaded_by_id, len(content) - document.size_bytes)
+        _enforce_upload_quota(
+            db, document.project_id, document.uploaded_by_id, len(content) - document.size_bytes
+        )
     get_storage().overwrite(document.storage_key, content)
 
     document.filename = file.filename or document.filename
