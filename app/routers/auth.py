@@ -11,7 +11,8 @@ router = APIRouter(tags=["auth"])
 
 @router.post("/auth", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def register(payload: UserCreate, db: Session = Depends(get_db)) -> UserOut:
-    return user_service.create_user(db, payload.login, payload.password)
+    user = user_service.create_user(db, payload.login, payload.password)
+    return UserOut.model_validate(user)
 
 
 @router.post("/login", response_model=TokenResponse)
