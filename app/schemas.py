@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.models import ImageStatus
 
 
 class UserCreate(BaseModel):
@@ -56,6 +58,38 @@ class DocumentOut(BaseModel):
     updated_at: datetime
 
 
+class ImageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    filename: str
+    content_type: str
+    status: ImageStatus
+    size_bytes: int
+    width: int | None
+    height: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ImageResizeCallback(BaseModel):
+    # resized_size_bytes is required unless the Lambda is reporting a failure
+    # (e.g. it couldn't decode the original), which rejects the image rather
+    # than leaving it in "pending" forever.
+    resized_size_bytes: int | None = Field(default=None, gt=0)
+    width: int | None = None
+    height: int | None = None
+    failed: bool = False
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def _require_size_unless_failed(self) -> "ImageResizeCallback":
+        if not self.failed and self.resized_size_bytes is None:
+            raise ValueError("resized_size_bytes is required when failed=false")
+        return self
+
+
 class ProjectInfo(BaseModel):
     id: int
     name: str
@@ -68,3 +102,4 @@ class ProjectInfo(BaseModel):
 
 class ProjectFull(ProjectInfo):
     documents: list[DocumentOut] = []
+    images: list[ImageOut] = []

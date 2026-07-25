@@ -1,11 +1,14 @@
-from fastapi import Depends, HTTPException, status
+import secrets
+
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.database import get_db
-from app.models import Document, ProjectAccess, User
+from app.models import Document, Image, ProjectAccess, User
 from app.security import decode_access_token
-from app.services import document_service, project_service, user_service
+from app.services import document_service, image_service, project_service, user_service
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -48,3 +51,20 @@ def get_document_for_user(
     db: Session = Depends(get_db),
 ) -> Document:
     return document_service.get_document_for_user(db, document_id, user)
+
+
+def get_image_for_user(
+    image_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Image:
+    return image_service.get_image_for_user(db, image_id, user)
+
+
+def require_internal_token(x_internal_token: str | None = Header(default=None)) -> None:
+    """Auth for machine-to-machine callbacks (the resize Lambda), which have no
+    logged-in user behind them. Applied to the whole internal router so a new
+    endpoint there can't accidentally ship unauthenticated."""
+    expected = get_settings().internal_callback_token
+    if not x_internal_token or not secrets.compare_digest(x_internal_token, expected):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid internal token")

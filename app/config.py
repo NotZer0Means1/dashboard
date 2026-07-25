@@ -1,5 +1,4 @@
 from functools import lru_cache
-from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -10,14 +9,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/dashboard"
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24
-    storage_dir: Path = Path("storage")
+    access_token_expire_minutes: int = 60
 
-    storage_backend: str = "local"  # "local" or "s3"
     aws_region: str = "us-east-1"
     aws_s3_bucket: str = "dashboard-documents"
 
     max_user_upload_bytes_per_project: int = 10 * 1024 * 1024
+
+    # Shared secret the resize Lambda must present when reporting a result back.
+    internal_callback_token: str = "change-me-internal-token"
 
 
 @lru_cache

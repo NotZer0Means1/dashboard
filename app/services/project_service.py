@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
+from app.image_storage import get_image_storage
 from app.models import Project, ProjectAccess, ProjectRole, User
 from app.services import user_service
 from app.storage import get_storage
@@ -40,7 +41,12 @@ def list_accesses_for_user(db: Session, user: User) -> list[ProjectAccess]:
     return (
         db.query(ProjectAccess)
         .filter(ProjectAccess.user_id == user.id)
-        .options(joinedload(ProjectAccess.project).joinedload(Project.documents))
+        # selectinload, not joinedload: joining two sibling collections in one
+        # query multiplies rows (documents x images per project).
+        .options(
+            joinedload(ProjectAccess.project).selectinload(Project.documents),
+            joinedload(ProjectAccess.project).selectinload(Project.images),
+        )
         .all()
     )
 
@@ -55,8 +61,15 @@ def update_project_info(
     return project
 
 
+def _delete_project_storage(project_id: int) -> None:
+    """Every store holding bytes for a project. A new asset type belongs here -
+    the DB rows cascade away on their own, but orphaned objects leak silently."""
+    get_storage().delete_project_dir(project_id)
+    get_image_storage().delete_project_images(project_id)
+
+
 def delete_project(db: Session, project: Project) -> None:
-    get_storage().delete_project_dir(project.id)
+    _delete_project_storage(project.id)
     db.delete(project)
     db.commit()
 
