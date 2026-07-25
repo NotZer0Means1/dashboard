@@ -9,7 +9,8 @@ from app.image_storage import (
 
 
 def test_build_original_and_resized_keys_use_distinct_prefixes():
-    # The prefixes must differ, or the Lambda's own write re-triggers the S3 event.
+    # The prefixes must differ, or the resized copy would overwrite the original
+    # that it is resized from - and re-resizing would then compound quality loss.
     assert build_original_key(1, 7, "photo.jpg") == "images/originals/1/7/photo.jpg"
     assert build_resized_key(1, 7, "photo.jpg") == "images/resized/1/7/photo.jpg"
 

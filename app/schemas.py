@@ -66,17 +66,27 @@ class ImageOut(BaseModel):
     filename: str
     content_type: str
     status: ImageStatus
+    # The original upload. Stays put after a resize, so both count against quota.
     size_bytes: int
+    resized_size_bytes: int | None
     width: int | None
     height: int | None
     created_at: datetime
     updated_at: datetime
 
 
+class ImageResizeRequest(BaseModel):
+    # Bounded so a caller can't ask for dimensions that would exhaust the
+    # Lambda's memory. Aspect ratio is preserved, so these are a bounding box:
+    # the result fits inside them rather than matching them exactly.
+    width: int = Field(default=512, ge=1, le=4096)
+    height: int = Field(default=512, ge=1, le=4096)
+
+
 class ImageResizeCallback(BaseModel):
-    # resized_size_bytes is required unless the Lambda is reporting a failure
-    # (e.g. it couldn't decode the original), which rejects the image rather
-    # than leaving it in "pending" forever.
+    # Body of the manual override endpoint (/internal/...), which records a resize
+    # run out-of-band. resized_size_bytes is required unless failed=true is being
+    # used to force the image into the rejected state.
     resized_size_bytes: int | None = Field(default=None, gt=0)
     width: int | None = None
     height: int | None = None

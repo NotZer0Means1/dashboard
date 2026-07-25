@@ -2,13 +2,12 @@ from functools import lru_cache
 
 from app.s3 import S3ObjectStore, sanitize_filename
 
-# The S3 event notification only watches the originals prefix (see
-# infra/aws/README.md). Writing resized images under a different prefix is what
-# stops the resize Lambda's own PUT from re-triggering itself.
+# Originals and resized copies live under separate prefixes so the resized write
+# never clobbers the original it was made from - the original is retained as the
+# source for any later resize (see services/image_service.resize_image).
 #
-# KEEP IN SYNC with infra/aws/lambda/resize_image/handler.py, which re-declares
-# these prefixes and the resized key layout - it deploys as its own bundle and
-# cannot import from this package.
+# The app builds both keys and passes them to the resize Lambda explicitly, so
+# the function no longer re-declares this layout.
 ORIGINALS_PREFIX = "images/originals"
 RESIZED_PREFIX = "images/resized"
 
