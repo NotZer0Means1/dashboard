@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
@@ -14,6 +16,8 @@ from app.schemas import (
 )
 from app.services import project_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["projects"])
 
 
@@ -29,11 +33,33 @@ def _project_info(project: Project, role: ProjectRole) -> ProjectInfo:
     )
 
 
-def _project_full(project: Project, role: ProjectRole) -> ProjectFull:
+def _project_images(db: Session, project: Project) -> list[ImageOut]:
+    """Images are best-effort here: a row this schema can't load - one written
+    before a migration, say - degrades to an omitted image instead of a 500 for
+    the whole listing. Broad except on purpose: the failure can come from the
+    lazy load (SQLAlchemy) or the validation (Pydantic), which share no base class.
+
+    GET /project/{id}/images is the unforgiving version - use it to see the real
+    error when images go missing from here.
+    """
+    try:
+        return [ImageOut.model_validate(image) for image in project.images]
+    except Exception:
+        logger.warning("Skipping unloadable images for project %s", project.id, exc_info=True)
+        # A failed statement leaves the transaction unusable on Postgres, so the
+        # remaining projects would fail too without this. Safe: the listing is
+        # read-only, so there is nothing pending to lose.
+        db.rollback()
+        return []
+
+
+def _project_full(db: Session, project: Project, role: ProjectRole) -> ProjectFull:
+    # Argument order matters: info and documents are built before the images call
+    # can trigger a rollback, so they can't be caught half-built by it.
     return ProjectFull(
         **_project_info(project, role).model_dump(),
         documents=[DocumentOut.model_validate(document) for document in project.documents],
-        images=[ImageOut.model_validate(image) for image in project.images],
+        images=_project_images(db, project),
     )
 
 
@@ -53,12 +79,7 @@ def list_projects(
     db: Session = Depends(get_db),
 ) -> list[ProjectFull]:
     accesses = project_service.list_accesses_for_user(db, user)
-    return [_project_full(access.project, access.role) for access in accesses]
-
-
-@router.get("/project/{project_id}/info", response_model=ProjectInfo)
-def get_project_info(access: ProjectAccess = Depends(require_project_access)) -> ProjectInfo:
-    return _project_info(access.project, access.role)
+    return [_project_full(db, access.project, access.role) for access in accesses]
 
 
 @router.put("/project/{project_id}/info", response_model=ProjectInfo)
