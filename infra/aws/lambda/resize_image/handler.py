@@ -57,7 +57,12 @@ _FORMAT_BY_EXTENSION = {
 
 def _parse_key(key: str) -> tuple[int, int, str]:
     # images/originals/{project_id}/{image_id}/{filename}
-    _, _, project_id, image_id, *filename_parts = key.split("/")
+    parts = key.split("/")
+    if len(parts) < 5:
+        raise ValueError(f"Unexpected S3 key layout: {key!r}")
+    _, _, project_id, image_id, *filename_parts = parts
+    if not filename_parts:
+        raise ValueError(f"Missing filename in S3 key: {key!r}")
     return int(project_id), int(image_id), "/".join(filename_parts)
 
 

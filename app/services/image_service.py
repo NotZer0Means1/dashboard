@@ -97,13 +97,15 @@ def finalize_image(
     storage = get_image_storage()
     resized_key = build_resized_key(image.project_id, image.id, image.filename)
 
-    # The pending row already reserves the original's size, so only the difference
-    # between that reservation and the real resized size still needs to fit.
+    if not failed and resized_size_bytes is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "resized_size_bytes is required when failed=false"
+        )
+
+    delta = (resized_size_bytes - image.size_bytes) if resized_size_bytes is not None else 0
     rejected = failed or (
         image.uploaded_by_id is not None
-        and not quota_service.has_room(
-            db, image.project_id, image.uploaded_by_id, resized_size_bytes - image.size_bytes
-        )
+        and not quota_service.has_room(db, image.project_id, image.uploaded_by_id, delta)
     )
 
     storage.delete(image.original_storage_key)
