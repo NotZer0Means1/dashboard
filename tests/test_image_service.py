@@ -215,3 +215,17 @@ def test_finalize_image_raises_404_when_image_missing(db):
         image_service.finalize_image(db, 999, resized_size_bytes=100)
 
     assert exc_info.value.status_code == 404
+
+
+def test_finalize_image_rejects_missing_size_when_not_failed(db, monkeypatch):
+    """The schema guards this at the HTTP boundary, but finalize_image is callable
+    directly - without the check it would crash on None arithmetic."""
+    monkeypatch.setattr(image_service, "get_image_storage", lambda: MagicMock())
+    image = _persist(db, _pending_image())
+
+    with pytest.raises(HTTPException) as exc_info:
+        image_service.finalize_image(db, image.id, resized_size_bytes=None, failed=False)
+
+    assert exc_info.value.status_code == 400
+    db.refresh(image)
+    assert image.status == ImageStatus.pending  # left alone, not half-resolved

@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from app.image_storage import (
     S3ImageStorage,
@@ -59,7 +59,8 @@ def test_delete_project_images_sweeps_both_prefixes():
     storage.delete_project_images(1)
 
     deleted = {
-        call.kwargs["Delete"]["Objects"][0]["Key"] for call in client.delete_objects.call_args_list
+        delete_call.kwargs["Delete"]["Objects"][0]["Key"]
+        for delete_call in client.delete_objects.call_args_list
     }
     assert deleted == {"images/originals/1/7/photo.jpg", "images/resized/1/7/photo.jpg"}
 
