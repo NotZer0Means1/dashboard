@@ -4,7 +4,14 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_current_user, require_project_access, require_project_owner
 from app.models import Project, ProjectAccess, ProjectRole, User
-from app.schemas import DocumentOut, ProjectCreate, ProjectFull, ProjectInfo, ProjectUpdate
+from app.schemas import (
+    DocumentOut,
+    ImageOut,
+    ProjectCreate,
+    ProjectFull,
+    ProjectInfo,
+    ProjectUpdate,
+)
 from app.services import project_service
 
 router = APIRouter(tags=["projects"])
@@ -26,6 +33,7 @@ def _project_full(project: Project, role: ProjectRole) -> ProjectFull:
     return ProjectFull(
         **_project_info(project, role).model_dump(),
         documents=[DocumentOut.model_validate(document) for document in project.documents],
+        images=[ImageOut.model_validate(image) for image in project.images],
     )
 
 
