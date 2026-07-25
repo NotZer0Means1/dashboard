@@ -167,47 +167,6 @@ def resize_image(db: Session, image: Image, *, width: int, height: int) -> Image
     )
 
 
-def finalize_image(
-    db: Session,
-    image_id: int,
-    *,
-    resized_size_bytes: int | None = None,
-    width: int | None = None,
-    height: int | None = None,
-    failed: bool = False,
-) -> Image:
-    """Records a resize performed outside the normal request path.
-
-    Nothing calls this automatically any more - resize_image() invokes the Lambda
-    synchronously and applies the result itself. It stays as a manual override for
-    the case where a resize was run out-of-band (see the Internal folder of
-    postman_collection.json) and the row needs to catch up.
-    """
-    image = db.query(Image).filter(Image.id == image_id).first()
-    if image is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Image not found")
-
-    if failed:
-        image.status = ImageStatus.rejected
-        db.commit()
-        db.refresh(image)
-        return image
-
-    if resized_size_bytes is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "resized_size_bytes is required when failed=false"
-        )
-
-    return _apply_resize_result(
-        db,
-        image,
-        resized_key=build_resized_key(image.project_id, image.id, image.filename),
-        resized_size_bytes=resized_size_bytes,
-        width=width,
-        height=height,
-    )
-
-
 def list_images(db: Session, project_id: int) -> list[Image]:
     return db.query(Image).filter(Image.project_id == project_id).order_by(Image.id).all()
 

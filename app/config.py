@@ -23,9 +23,6 @@ class Settings(BaseSettings):
     max_resize_dimension: int = 4096
     default_resize_dimension: int = 512
 
-    # Shared secret the resize Lambda must present when reporting a result back.
-    internal_callback_token: str = "change-me-internal-token"
-
 
 @lru_cache
 def get_settings() -> Settings:
