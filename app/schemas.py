@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models import ImageStatus
 
@@ -81,23 +81,6 @@ class ImageResizeRequest(BaseModel):
     # the result fits inside them rather than matching them exactly.
     width: int = Field(default=512, ge=1, le=4096)
     height: int = Field(default=512, ge=1, le=4096)
-
-
-class ImageResizeCallback(BaseModel):
-    # Body of the manual override endpoint (/internal/...), which records a resize
-    # run out-of-band. resized_size_bytes is required unless failed=true is being
-    # used to force the image into the rejected state.
-    resized_size_bytes: int | None = Field(default=None, gt=0)
-    width: int | None = None
-    height: int | None = None
-    failed: bool = False
-    error: str | None = None
-
-    @model_validator(mode="after")
-    def _require_size_unless_failed(self) -> "ImageResizeCallback":
-        if not self.failed and self.resized_size_bytes is None:
-            raise ValueError("resized_size_bytes is required when failed=false")
-        return self
 
 
 class ProjectInfo(BaseModel):
