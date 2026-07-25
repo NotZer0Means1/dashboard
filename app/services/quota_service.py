@@ -9,9 +9,8 @@ from app.models import Document, Image, ImageStatus
 def project_bytes_used(db: Session, project_id: int, user_id: int) -> int:
     """Bytes already committed to this project by this user, across documents and images.
 
-    A pending image's reserved (original) size counts here too, so two concurrent
-    uploads can't each individually pass the check and jointly blow the limit.
-    Rejected images never count.
+    A resized image is charged for both copies: the original is kept as the source
+    for future resizes, so it is still occupying storage. Rejected images never count.
     """
     documents = (
         db.query(func.sum(Document.size_bytes))
@@ -19,7 +18,7 @@ def project_bytes_used(db: Session, project_id: int, user_id: int) -> int:
         .scalar()
     )
     images = (
-        db.query(func.sum(Image.size_bytes))
+        db.query(func.sum(Image.size_bytes + func.coalesce(Image.resized_size_bytes, 0)))
         .filter(
             Image.project_id == project_id,
             Image.uploaded_by_id == user_id,
@@ -30,13 +29,16 @@ def project_bytes_used(db: Session, project_id: int, user_id: int) -> int:
     return (documents or 0) + (images or 0)
 
 
+def limit_bytes() -> int:
+    return get_settings().max_user_upload_bytes_per_project
+
+
 def has_room(db: Session, project_id: int, user_id: int, additional_bytes: int) -> bool:
-    limit = get_settings().max_user_upload_bytes_per_project
-    return project_bytes_used(db, project_id, user_id) + additional_bytes <= limit
+    return project_bytes_used(db, project_id, user_id) + additional_bytes <= limit_bytes()
 
 
 def enforce_quota(db: Session, project_id: int, user_id: int, additional_bytes: int) -> None:
-    limit = get_settings().max_user_upload_bytes_per_project
+    limit = limit_bytes()
     used = project_bytes_used(db, project_id, user_id)
     if used + additional_bytes > limit:
         raise HTTPException(

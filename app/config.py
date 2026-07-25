@@ -16,6 +16,13 @@ class Settings(BaseSettings):
 
     max_user_upload_bytes_per_project: int = 10 * 1024 * 1024
 
+    # The resize Lambda, invoked synchronously by POST /image/{id}/resize.
+    resize_lambda_name: str = "dashboard-resize-image"
+    # Upper bound on requested dimensions. Without it a caller could ask for
+    # 50000x50000 and blow the Lambda's memory (and the project's quota).
+    max_resize_dimension: int = 4096
+    default_resize_dimension: int = 512
+
     # Shared secret the resize Lambda must present when reporting a result back.
     internal_callback_token: str = "change-me-internal-token"
 

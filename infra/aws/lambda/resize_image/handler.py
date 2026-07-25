@@ -1,24 +1,21 @@
-"""S3-event-triggered image resize Lambda.
+"""Directly-invoked image resize Lambda.
 
-Trigger: S3 ObjectCreated notification scoped to the "images/originals/" prefix
-(configuring that prefix filter is what stops this function's own PUT of the
-resized copy under "images/resized/" from re-triggering itself - see the
-"Wire up the resize Lambda" section of infra/aws/README.md).
+Trigger: a synchronous boto3 invoke from the backend's POST /image/{id}/resize
+(see app/lambda_client.py). There is deliberately no S3 event notification on the
+bucket any more - resizing happens only when a user asks for it, so uploading an
+image no longer costs a Lambda invocation.
 
-Flow: download the original -> resize with Pillow -> upload the result under
-images/resized/{project_id}/{image_id}/{filename} -> POST the outcome back to
-the backend's /internal/images/{image_id}/resize-callback, authenticated with
-a shared secret (INTERNAL_CALLBACK_TOKEN) rather than a user token, since this
-call has no logged-in user behind it.
+Flow: download source_key -> resize with Pillow -> upload the result to
+target_key -> return the outcome to the caller. The caller applies it to the
+database, so this function does not call back into the app and needs no
+credentials for it.
 
 Resizing lives here and nowhere else - the app only pre-validates uploads
 (app/image_validation.py) and never resizes. This deploys as its own zip/layer
 bundle, so it deliberately does not import the app package.
 
-KEEP IN SYNC with app/image_storage.py: the two prefixes and the resized key
-layout below are duplicated there. If they drift, the app will look for the
-resized object under a key the Lambda never wrote and every image ends up
-"rejected". Likewise _FORMAT_BY_EXTENSION must cover every extension in
+KEEP IN SYNC with app/lambda_client.py, which builds the event below and parses
+the response. _FORMAT_BY_EXTENSION must also cover every extension in
 image_service.ALLOWED_EXTENSIONS, or new types silently fall back to JPEG.
 
 Deployment note: Pillow ships C extensions, so it must be provided as a Lambda
@@ -29,23 +26,18 @@ Windows/Mac dev machine's site-packages.
 """
 
 import io
-import json
 import os
-import urllib.error
-import urllib.request
-from urllib.parse import unquote_plus
 
 import boto3
 from PIL import Image, UnidentifiedImageError
 
 s3 = boto3.client("s3")
 
-ORIGINALS_PREFIX = "images/originals/"
-RESIZED_PREFIX = "images/resized/"
-
-MAX_IMAGE_DIMENSION = int(os.environ.get("MAX_IMAGE_DIMENSION", "512"))
-CALLBACK_BASE_URL = os.environ["CALLBACK_BASE_URL"]  # e.g. http://<ec2-ip>:8000
-INTERNAL_CALLBACK_TOKEN = os.environ["INTERNAL_CALLBACK_TOKEN"]
+# Only used when the caller omits the dimensions; the app normally sends them.
+DEFAULT_DIMENSION = int(os.environ.get("MAX_IMAGE_DIMENSION", "512"))
+# Hard ceiling regardless of what the caller asks for, so a bad request can't
+# exhaust the function's memory. The app validates too; this is defence in depth.
+MAX_DIMENSION = int(os.environ.get("MAX_ALLOWED_DIMENSION", "4096"))
 
 _FORMAT_BY_EXTENSION = {
     ".jpg": "JPEG",
@@ -55,75 +47,55 @@ _FORMAT_BY_EXTENSION = {
 }
 
 
-def _parse_key(key: str) -> tuple[int, int, str]:
-    # images/originals/{project_id}/{image_id}/{filename}
-    parts = key.split("/")
-    if len(parts) < 5:
-        raise ValueError(f"Unexpected S3 key layout: {key!r}")
-    _, _, project_id, image_id, *filename_parts = parts
-    if not filename_parts:
-        raise ValueError(f"Missing filename in S3 key: {key!r}")
-    return int(project_id), int(image_id), "/".join(filename_parts)
+def _output_format(filename: str) -> str:
+    extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return _FORMAT_BY_EXTENSION.get(extension, "JPEG")
 
 
-def _resize(content: bytes, output_format: str) -> tuple[bytes, int, int]:
+def _clamp(value, fallback: int) -> int:
+    try:
+        dimension = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(1, min(dimension, MAX_DIMENSION))
+
+
+def _resize(content: bytes, output_format: str, width: int, height: int) -> tuple[bytes, int, int]:
     with Image.open(io.BytesIO(content)) as image:
         image.load()
         image = image.convert("RGB") if output_format == "JPEG" else image
-        image.thumbnail((MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION), Image.LANCZOS)
+        # thumbnail() fits the image inside the box and preserves aspect ratio,
+        # so the result can be smaller than requested in one dimension. It also
+        # never upscales, which is why the original is kept as the resize source.
+        image.thumbnail((width, height), Image.LANCZOS)
         buffer = io.BytesIO()
         image.save(buffer, format=output_format)
         return buffer.getvalue(), image.width, image.height
 
 
-def _callback(image_id: int, payload: dict) -> None:
-    url = f"{CALLBACK_BASE_URL}/internal/images/{image_id}/resize-callback"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "X-Internal-Token": INTERNAL_CALLBACK_TOKEN,
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            response.read()
-    except urllib.error.HTTPError as exc:
-        # 404 (image row disappeared) or 401 (token mismatch) etc - nothing to
-        # retry into, just surface it in CloudWatch logs.
-        print(f"callback for image {image_id} failed: {exc.code} {exc.read()}")
-        raise
-
-
 def handler(event, context):
-    for record in event["Records"]:
-        bucket = record["s3"]["bucket"]["name"]
-        key = unquote_plus(record["s3"]["object"]["key"])
+    bucket = event["bucket"]
+    source_key = event["source_key"]
+    target_key = event["target_key"]
+    filename = event.get("filename") or source_key.rsplit("/", 1)[-1]
+    width = _clamp(event.get("width"), DEFAULT_DIMENSION)
+    height = _clamp(event.get("height"), DEFAULT_DIMENSION)
 
-        if not key.startswith(ORIGINALS_PREFIX):
-            continue  # defense in depth - the event filter should already guarantee this
-
-        project_id, image_id, filename = _parse_key(key)
-        extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        output_format = _FORMAT_BY_EXTENSION.get(extension, "JPEG")
-
-        try:
-            original = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
-            resized_bytes, width, height = _resize(original, output_format)
-        except (UnidentifiedImageError, OSError) as exc:
-            _callback(image_id, {"failed": True, "error": str(exc)})
-            continue
-
-        resized_key = f"{RESIZED_PREFIX}{project_id}/{image_id}/{filename}"
-        s3.put_object(Bucket=bucket, Key=resized_key, Body=resized_bytes)
-
-        _callback(
-            image_id,
-            {
-                "resized_size_bytes": len(resized_bytes),
-                "width": width,
-                "height": height,
-            },
+    try:
+        original = s3.get_object(Bucket=bucket, Key=source_key)["Body"].read()
+        resized_bytes, actual_width, actual_height = _resize(
+            original, _output_format(filename), width, height
         )
+    except (UnidentifiedImageError, OSError) as exc:
+        # A decodable-image problem, not an infrastructure one: report it as a
+        # result so the caller can mark the image rejected rather than retrying.
+        return {"ok": False, "error": str(exc)}
+
+    s3.put_object(Bucket=bucket, Key=target_key, Body=resized_bytes)
+
+    return {
+        "ok": True,
+        "resized_size_bytes": len(resized_bytes),
+        "width": actual_width,
+        "height": actual_height,
+    }

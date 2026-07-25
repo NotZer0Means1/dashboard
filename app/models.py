@@ -14,7 +14,10 @@ class ProjectRole(enum.StrEnum):
 
 
 class ImageStatus(enum.StrEnum):
-    pending = "pending"
+    # Resizing is user-triggered (POST /image/{id}/resize), so "stored" is a
+    # terminal state, not a waiting room: an image that is never resized stays
+    # here forever and that is fine.
+    stored = "stored"
     ready = "ready"
     rejected = "rejected"
 
@@ -112,11 +115,15 @@ class Image(Base):
     status: Mapped[ImageStatus] = mapped_column(
         SqlEnum(ImageStatus, native_enum=False, length=20),
         nullable=False,
-        default=ImageStatus.pending,
+        default=ImageStatus.stored,
     )
-    # While pending: the original upload's size, reserved against quota.
-    # Once ready: the resized image's size - the number that actually counts long-term.
+    # The original upload's size, fixed at upload time. The original is kept even
+    # after a resize, so re-resizing at a different size always works from the
+    # full-quality source instead of upscaling an already-shrunk copy.
     size_bytes: Mapped[int] = mapped_column(nullable=False)
+    # The current resized copy, or None if the image has never been resized.
+    # Both sizes count against quota - see services/quota_service.py.
+    resized_size_bytes: Mapped[int | None] = mapped_column(nullable=True)
     original_storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
     storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     width: Mapped[int | None] = mapped_column(nullable=True)

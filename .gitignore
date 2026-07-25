@@ -12,3 +12,5 @@ storage/
 .env
 .env.*
 !.env.example
+postman_collection.json
+infra/aws/README.md

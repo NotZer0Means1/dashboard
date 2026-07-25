@@ -42,16 +42,24 @@ def test_project_bytes_used_sums_documents_and_images(db):
     assert quota_service.project_bytes_used(db, project_id=1, user_id=1) == 1_500_000
 
 
-def test_project_bytes_used_counts_pending_images_but_not_rejected(db):
+def test_project_bytes_used_counts_stored_images_but_not_rejected(db):
     db.add_all(
         [
-            _image(status=ImageStatus.pending, size_bytes=200_000),
+            _image(status=ImageStatus.stored, size_bytes=200_000, storage_key=None),
             _image(status=ImageStatus.rejected, size_bytes=9_000_000),
         ]
     )
     db.commit()
 
     assert quota_service.project_bytes_used(db, project_id=1, user_id=1) == 200_000
+
+
+def test_project_bytes_used_counts_both_original_and_resized_copies(db):
+    """The original is kept as the resize source, so a resized image occupies both."""
+    db.add_all([_image(size_bytes=500_000, resized_size_bytes=120_000)])
+    db.commit()
+
+    assert quota_service.project_bytes_used(db, project_id=1, user_id=1) == 620_000
 
 
 def test_project_bytes_used_only_counts_matching_project_and_user(db):
