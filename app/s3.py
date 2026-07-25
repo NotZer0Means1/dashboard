@@ -31,7 +31,13 @@ class S3ObjectStore:
 
     def read(self, key: str) -> bytes:
         response = self.client.get_object(Bucket=self.bucket, Key=key)
-        return response["Body"].read()
+        body = response["Body"]
+        try:
+            return body.read()
+        finally:
+            # botocore keeps the underlying connection checked out of the pool
+            # until the streaming body is closed (see PR #5 autofix).
+            body.close()
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key)

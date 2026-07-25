@@ -92,4 +92,5 @@ def invite_user(db: Session, access: ProjectAccess, invitee_login: str) -> Proje
     )
     db.add(new_access)
     db.commit()
+    db.refresh(new_access)
     return new_access

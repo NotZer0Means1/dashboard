@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.storage import S3DocumentStorage, get_storage
 
 
@@ -41,6 +43,32 @@ def test_read_returns_object_body():
     storage = S3DocumentStorage(bucket="test-bucket", client=client)
 
     assert storage.read("1/7/report.pdf") == b"hello"
+
+
+def test_read_closes_the_streaming_body():
+    # botocore holds the connection out of the pool until the body is closed,
+    # so a leak here starves the pool under load. Regression guard for PR #5.
+    client = MagicMock()
+    body = MagicMock(read=lambda: b"hello")
+    client.get_object.return_value = {"Body": body}
+    storage = S3DocumentStorage(bucket="test-bucket", client=client)
+
+    storage.read("1/7/report.pdf")
+
+    body.close.assert_called_once()
+
+
+def test_read_closes_the_streaming_body_even_when_read_fails():
+    client = MagicMock()
+    body = MagicMock()
+    body.read.side_effect = OSError("connection reset")
+    client.get_object.return_value = {"Body": body}
+    storage = S3DocumentStorage(bucket="test-bucket", client=client)
+
+    with pytest.raises(OSError):
+        storage.read("1/7/report.pdf")
+
+    body.close.assert_called_once()
 
 
 def test_delete_removes_object():
