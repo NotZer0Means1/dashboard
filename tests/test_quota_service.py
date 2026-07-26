@@ -13,7 +13,7 @@ def _document(**overrides) -> Document:
             "filename": "a.pdf",
             "content_type": "application/pdf",
             "size_bytes": 1_000_000,
-            "storage_key": "1/1/a.pdf",
+            "storage_key": "projects/1/documents/1/a.pdf",
             **overrides,
         }
     )
@@ -28,8 +28,8 @@ def _image(**overrides) -> Image:
             "content_type": "image/jpeg",
             "status": ImageStatus.ready,
             "size_bytes": 500_000,
-            "original_storage_key": "images/originals/1/1/b.jpg",
-            "storage_key": "images/resized/1/1/b.jpg",
+            "original_storage_key": "projects/1/images/1/original/b.jpg",
+            "storage_key": "projects/1/images/1/resized/b.jpg",
             **overrides,
         }
     )

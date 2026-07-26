@@ -14,9 +14,10 @@ class ProjectRole(enum.StrEnum):
 
 
 class ImageStatus(enum.StrEnum):
-    # Resizing is user-triggered (POST /image/{id}/resize), so "stored" is a
-    # terminal state, not a waiting room: an image that is never resized stays
-    # here forever and that is fine.
+    # Set at upload. Resizing runs asynchronously off an S3 event, so this is a
+    # waiting room: the callback promotes the row to "ready" once the Lambda has
+    # written the resized copy. A row stuck here means the function never
+    # reported back - check its CloudWatch logs.
     stored = "stored"
     ready = "ready"
     rejected = "rejected"

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.database import Base, engine
-from app.routers import auth, documents, images, projects
+from app.routers import auth, documents, images, internal, projects
 
 
 @asynccontextmanager
@@ -19,6 +19,7 @@ app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(documents.router)
 app.include_router(images.router)
+app.include_router(internal.router)
 
 
 @app.get("/health", tags=["health"])

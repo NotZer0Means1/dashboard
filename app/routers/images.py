@@ -6,7 +6,7 @@ from app.database import get_db
 from app.deps import get_current_user, get_image_for_user, require_project_access
 from app.models import Image, ProjectAccess, User
 from app.routers._helpers import attachment_response
-from app.schemas import ImageOut, ImageResizeRequest
+from app.schemas import ImageOut
 from app.services import image_service
 
 router = APIRouter(tags=["images"])
@@ -38,19 +38,9 @@ async def upload_image(
 
 @router.get("/image/{image_id}/info", response_model=ImageOut)
 def get_image_info(image: Image = Depends(get_image_for_user)) -> ImageOut:
+    """Poll this after uploading: resizing runs asynchronously off an S3 event,
+    so status flips from "stored" to "ready" some time after the upload returns."""
     return ImageOut.model_validate(image)
-
-
-@router.post("/image/{image_id}/resize", response_model=ImageOut)
-def resize_image(
-    payload: ImageResizeRequest | None = None,
-    image: Image = Depends(get_image_for_user),
-    db: Session = Depends(get_db),
-) -> ImageOut:
-    """Resizes the stored original, synchronously. Re-runnable at other sizes."""
-    options = payload or ImageResizeRequest()
-    resized = image_service.resize_image(db, image, width=options.width, height=options.height)
-    return ImageOut.model_validate(resized)
 
 
 @router.get("/image/{image_id}")

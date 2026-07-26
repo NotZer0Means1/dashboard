@@ -56,7 +56,7 @@ def test_create_documents_raises_413_when_exceeding_quota(db, monkeypatch):
             filename="existing.pdf",
             content_type="application/pdf",
             size_bytes=8 * 1024 * 1024,
-            storage_key="1/1/existing.pdf",
+            storage_key="projects/1/documents/1/existing.pdf",
         )
     )
     db.commit()
@@ -74,7 +74,7 @@ def test_create_documents_raises_413_when_exceeding_quota(db, monkeypatch):
 def test_create_documents_succeeds_when_within_quota(db, monkeypatch):
     monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
     storage = MagicMock()
-    storage.save.return_value = "1/1/report.pdf"
+    storage.save.return_value = "projects/1/documents/1/report.pdf"
     monkeypatch.setattr(document_service, "get_storage", lambda: storage)
     file = FakeUploadFile("report.pdf", content=b"x" * (1024 * 1024))
 
@@ -83,7 +83,7 @@ def test_create_documents_succeeds_when_within_quota(db, monkeypatch):
     )
 
     assert len(created) == 1
-    assert created[0].storage_key == "1/1/report.pdf"
+    assert created[0].storage_key == "projects/1/documents/1/report.pdf"
 
 
 def test_create_documents_rejects_unsupported_extension(db):
@@ -105,7 +105,7 @@ def test_update_document_raises_413_when_replacement_exceeds_quota(db, monkeypat
         filename="report.pdf",
         content_type="application/pdf",
         size_bytes=8 * 1024 * 1024,
-        storage_key="1/1/report.pdf",
+        storage_key="projects/1/documents/1/report.pdf",
     )
     db.add(document)
     db.commit()
@@ -127,7 +127,7 @@ def test_update_document_allows_replacement_within_quota(db, monkeypatch):
         filename="report.pdf",
         content_type="application/pdf",
         size_bytes=1 * 1024 * 1024,
-        storage_key="1/1/report.pdf",
+        storage_key="projects/1/documents/1/report.pdf",
     )
     db.add(document)
     db.commit()

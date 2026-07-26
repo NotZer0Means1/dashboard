@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models import ImageStatus
 
@@ -46,6 +46,10 @@ class ProjectUpdate(BaseModel):
     description: str | None = None
 
 
+class InviteOut(BaseModel):
+    message: str
+
+
 class DocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -75,12 +79,21 @@ class ImageOut(BaseModel):
     updated_at: datetime
 
 
-class ImageResizeRequest(BaseModel):
-    # Bounded so a caller can't ask for dimensions that would exhaust the
-    # Lambda's memory. Aspect ratio is preserved, so these are a bounding box:
-    # the result fits inside them rather than matching them exactly.
-    width: int = Field(default=512, ge=1, le=4096)
-    height: int = Field(default=512, ge=1, le=4096)
+class ImageResizeCallback(BaseModel):
+    # Body the resize Lambda POSTs to /internal/... once it has finished with an
+    # object. resized_size_bytes is required unless failed=true, which the Lambda
+    # sends when it could not decode the original at all.
+    resized_size_bytes: int | None = Field(default=None, gt=0)
+    width: int | None = None
+    height: int | None = None
+    failed: bool = False
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def _require_size_unless_failed(self) -> "ImageResizeCallback":
+        if not self.failed and self.resized_size_bytes is None:
+            raise ValueError("resized_size_bytes is required when failed=false")
+        return self
 
 
 class ProjectInfo(BaseModel):
