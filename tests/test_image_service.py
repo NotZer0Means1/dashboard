@@ -96,6 +96,35 @@ def test_read_image_content_prefers_the_resized_copy_once_it_exists(monkeypatch)
     storage.read.assert_called_once_with("projects/1/images/1/resized/pic.jpg")
 
 
+def test_read_image_content_serves_the_original_on_request_even_when_resized(monkeypatch):
+    """The original is retained and charged against quota after a resize, so it has
+    to stay reachable - otherwise the project pays for bytes nothing can fetch."""
+    storage = MagicMock()
+    storage.read.return_value = b"original-bytes"
+    monkeypatch.setattr(image_service, "get_image_storage", lambda: storage)
+    image = _stored_image(
+        id=1, status=ImageStatus.ready, storage_key="projects/1/images/1/resized/pic.jpg"
+    )
+
+    assert image_service.read_image_content(image, original=True) == b"original-bytes"
+    storage.read.assert_called_once_with("projects/1/images/1/original/pic.jpg")
+
+
+def test_read_image_content_raises_409_when_the_original_is_gone(monkeypatch):
+    monkeypatch.setattr(image_service, "get_image_storage", lambda: MagicMock())
+    image = _stored_image(
+        id=1,
+        status=ImageStatus.ready,
+        original_storage_key="",
+        storage_key="projects/1/images/1/resized/pic.jpg",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        image_service.read_image_content(image, original=True)
+
+    assert exc_info.value.status_code == 409
+
+
 def test_read_image_content_raises_409_when_rejected():
     image = _stored_image(id=1, status=ImageStatus.rejected)
 
@@ -171,6 +200,98 @@ def test_create_image_raises_400_on_unsupported_extension(db):
         asyncio.run(image_service.create_image(db, 1, 1, FakeUploadFile("pic.bmp", jpeg_bytes())))
 
     assert exc_info.value.status_code == 400
+
+
+# --- delete_image ----------------------------------------------------------
+
+
+def _resized_image(db) -> Image:
+    return _persist(
+        db,
+        _stored_image(
+            status=ImageStatus.ready,
+            resized_size_bytes=200_000,
+            storage_key="projects/1/images/1/resized/pic.jpg",
+            width=512,
+            height=384,
+        ),
+    )
+
+
+def test_delete_image_removes_both_copies_and_the_row(db, monkeypatch):
+    storage = MagicMock()
+    monkeypatch.setattr(image_service, "get_image_storage", lambda: storage)
+    image = _resized_image(db)
+
+    image_service.delete_image(db, image)
+
+    assert {call.args[0] for call in storage.delete.call_args_list} == {
+        "projects/1/images/1/original/pic.jpg",
+        "projects/1/images/1/resized/pic.jpg",
+    }
+    assert db.query(Image).count() == 0
+
+
+def test_delete_resized_copy_frees_its_quota_and_keeps_the_original(db, monkeypatch):
+    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
+    storage = MagicMock()
+    monkeypatch.setattr(image_service, "get_image_storage", lambda: storage)
+    image = _resized_image(db)
+
+    image_service.delete_image(db, image, copy="resized")
+
+    storage.delete.assert_called_once_with("projects/1/images/1/resized/pic.jpg")
+    db.refresh(image)
+    assert image.status == ImageStatus.stored
+    assert image.storage_key is None
+    assert image.resized_size_bytes is None
+    assert (image.width, image.height) == (None, None)
+    assert image.original_storage_key == "projects/1/images/1/original/pic.jpg"
+    # Only the original is charged now.
+    assert quota_service.project_bytes_used(db, 1, 1) == 1_000_000
+
+
+def test_delete_original_copy_frees_its_quota_and_keeps_the_resized(db, monkeypatch):
+    monkeypatch.setenv("MAX_USER_UPLOAD_BYTES_PER_PROJECT", str(10 * 1024 * 1024))
+    storage = MagicMock()
+    monkeypatch.setattr(image_service, "get_image_storage", lambda: storage)
+    image = _resized_image(db)
+
+    image_service.delete_image(db, image, copy="original")
+
+    storage.delete.assert_called_once_with("projects/1/images/1/original/pic.jpg")
+    db.refresh(image)
+    assert image.status == ImageStatus.ready
+    assert image.storage_key == "projects/1/images/1/resized/pic.jpg"
+    assert not image.original_storage_key
+    assert quota_service.project_bytes_used(db, 1, 1) == 200_000
+
+
+def test_delete_resized_copy_raises_409_when_there_is_none(db, monkeypatch):
+    monkeypatch.setattr(image_service, "get_image_storage", lambda: MagicMock())
+    image = _persist(db, _stored_image())
+
+    with pytest.raises(HTTPException) as exc_info:
+        image_service.delete_image(db, image, copy="resized")
+
+    assert exc_info.value.status_code == 409
+    assert db.query(Image).count() == 1
+
+
+def test_delete_original_copy_raises_409_when_it_is_the_only_copy(db, monkeypatch):
+    """Dropping it would leave a row that can serve nothing - deleting the whole
+    image is the honest way to say that."""
+    storage = MagicMock()
+    monkeypatch.setattr(image_service, "get_image_storage", lambda: storage)
+    image = _persist(db, _stored_image())
+
+    with pytest.raises(HTTPException) as exc_info:
+        image_service.delete_image(db, image, copy="original")
+
+    assert exc_info.value.status_code == 409
+    storage.delete.assert_not_called()
+    db.refresh(image)
+    assert image.original_storage_key == "projects/1/images/1/original/pic.jpg"
 
 
 # --- finalize_image (the resize Lambda's callback) ------------------------
