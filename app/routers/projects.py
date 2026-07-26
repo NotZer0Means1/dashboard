@@ -9,6 +9,7 @@ from app.models import Project, ProjectAccess, ProjectRole, User
 from app.schemas import (
     DocumentOut,
     ImageOut,
+    InviteOut,
     ProjectCreate,
     ProjectFull,
     ProjectInfo,
@@ -103,12 +104,14 @@ def delete_project(
 
 
 @router.post(
-    "/project/{project_id}/invite", response_model=ProjectInfo, status_code=status.HTTP_201_CREATED
+    "/project/{project_id}/invite", response_model=InviteOut, status_code=status.HTTP_201_CREATED
 )
 def invite_user(
     user: str = Query(..., description="Login of the user to grant access to"),
     access: ProjectAccess = Depends(require_project_owner),
     db: Session = Depends(get_db),
-) -> ProjectInfo:
+) -> InviteOut:
     project_service.invite_user(db, access, user)
-    return _project_info(access.project, access.role)
+    # The lookup is an exact match on login, so echoing the query value back names
+    # the user who was actually granted access.
+    return InviteOut(message=f"Invitation sent to {user}")

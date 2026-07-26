@@ -11,7 +11,7 @@ def test_save_builds_key_and_puts_object():
 
     key = storage.save(project_id=1, document_id=7, filename="report.pdf", content=b"hello")
 
-    assert key == "1/7/report.pdf"
+    assert key == "projects/1/documents/7/report.pdf"
     client.put_object.assert_called_once_with(Bucket="test-bucket", Key=key, Body=b"hello")
 
 
@@ -23,17 +23,17 @@ def test_save_sanitizes_path_traversal_in_filename():
         project_id=1, document_id=7, filename="../../etc/passwd", content=b"malicious"
     )
 
-    assert key == "1/7/passwd"
+    assert key == "projects/1/documents/7/passwd"
 
 
 def test_overwrite_puts_object_at_existing_key():
     client = MagicMock()
     storage = S3DocumentStorage(bucket="test-bucket", client=client)
 
-    storage.overwrite("1/7/report.pdf", b"v2")
+    storage.overwrite("projects/1/documents/7/report.pdf", b"v2")
 
     client.put_object.assert_called_once_with(
-        Bucket="test-bucket", Key="1/7/report.pdf", Body=b"v2"
+        Bucket="test-bucket", Key="projects/1/documents/7/report.pdf", Body=b"v2"
     )
 
 
@@ -42,7 +42,7 @@ def test_read_returns_object_body():
     client.get_object.return_value = {"Body": MagicMock(read=lambda: b"hello")}
     storage = S3DocumentStorage(bucket="test-bucket", client=client)
 
-    assert storage.read("1/7/report.pdf") == b"hello"
+    assert storage.read("projects/1/documents/7/report.pdf") == b"hello"
 
 
 def test_read_closes_the_streaming_body():
@@ -53,7 +53,7 @@ def test_read_closes_the_streaming_body():
     client.get_object.return_value = {"Body": body}
     storage = S3DocumentStorage(bucket="test-bucket", client=client)
 
-    storage.read("1/7/report.pdf")
+    storage.read("projects/1/documents/7/report.pdf")
 
     body.close.assert_called_once()
 
@@ -66,7 +66,7 @@ def test_read_closes_the_streaming_body_even_when_read_fails():
     storage = S3DocumentStorage(bucket="test-bucket", client=client)
 
     with pytest.raises(OSError):
-        storage.read("1/7/report.pdf")
+        storage.read("projects/1/documents/7/report.pdf")
 
     body.close.assert_called_once()
 
@@ -75,27 +75,28 @@ def test_delete_removes_object():
     client = MagicMock()
     storage = S3DocumentStorage(bucket="test-bucket", client=client)
 
-    storage.delete("1/7/report.pdf")
+    storage.delete("projects/1/documents/7/report.pdf")
 
-    client.delete_object.assert_called_once_with(Bucket="test-bucket", Key="1/7/report.pdf")
+    client.delete_object.assert_called_once_with(
+        Bucket="test-bucket", Key="projects/1/documents/7/report.pdf"
+    )
 
 
 def test_delete_project_dir_deletes_all_objects_under_prefix():
     client = MagicMock()
-    client.get_paginator.return_value.paginate.return_value = [
-        {"Contents": [{"Key": "1/7/a.pdf"}, {"Key": "1/8/b.docx"}]}
+    objects = [
+        {"Key": "projects/1/documents/7/a.pdf"},
+        {"Key": "projects/1/documents/8/b.docx"},
     ]
+    client.get_paginator.return_value.paginate.return_value = [{"Contents": objects}]
     storage = S3DocumentStorage(bucket="test-bucket", client=client)
 
     storage.delete_project_dir(1)
 
     client.get_paginator.return_value.paginate.assert_called_once_with(
-        Bucket="test-bucket", Prefix="1/"
+        Bucket="test-bucket", Prefix="projects/1/documents/"
     )
-    client.delete_objects.assert_called_once_with(
-        Bucket="test-bucket",
-        Delete={"Objects": [{"Key": "1/7/a.pdf"}, {"Key": "1/8/b.docx"}]},
-    )
+    client.delete_objects.assert_called_once_with(Bucket="test-bucket", Delete={"Objects": objects})
 
 
 def test_delete_project_dir_skips_delete_call_when_prefix_is_empty():

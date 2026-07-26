@@ -3,9 +3,8 @@ from pathlib import Path
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.image_storage import build_resized_key, get_image_storage
+from app.image_storage import build_original_key, build_resized_key, get_image_storage
 from app.image_validation import InvalidImageError, validate_image
-from app.lambda_client import ResizeInvocationError, get_resize_lambda_client
 from app.models import Image, ImageStatus, User
 from app.services import quota_service
 from app.services.project_service import get_project_access
@@ -32,9 +31,10 @@ def _validate_and_normalize_content_type(filename: str | None) -> str:
 async def create_image(db: Session, project_id: int, uploader_id: int, file: UploadFile) -> Image:
     """Stores the upload in S3 and returns it with status=stored.
 
-    Nothing is resized here and no Lambda runs: resizing is an explicit,
-    user-triggered step (see resize_image). An image that is never resized stays
-    "stored" indefinitely, which is a perfectly normal end state.
+    No resizing happens here, but the PUT below is what triggers it: the bucket
+    has an ObjectCreated notification on the originals prefix, so the resize
+    Lambda fires asynchronously and reports back to finalize_image() later. The
+    row is therefore returned as "stored" and flips to "ready" out of band.
     """
     content_type = _validate_and_normalize_content_type(file.filename)
     content = await file.read()
@@ -61,11 +61,16 @@ async def create_image(db: Session, project_id: int, uploader_id: int, file: Upl
     db.add(image)
     db.flush()  # assign image.id before it's used to build the storage key
 
-    image.original_storage_key = get_image_storage().save_original(
-        project_id, image.id, filename, content
-    )
-
+    # The object must not exist before the row does: the PUT fires the S3
+    # notification, and the Lambda's callback looks the row up by image_id.
+    # Committing first means that callback can never lose the race and 404 on an
+    # image that is still halfway through being created. The key is deterministic,
+    # so it can be recorded before the bytes are actually uploaded.
+    image.original_storage_key = build_original_key(project_id, image.id, filename)
     db.commit()
+
+    get_image_storage().save_original(project_id, image.id, filename, content)
+
     db.refresh(image)
     return image
 
@@ -81,8 +86,9 @@ def _apply_resize_result(
 ) -> Image:
     """Records a completed resize against the image, enforcing quota on the way in.
 
-    The resized copy always lives at the same deterministic key, so a re-resize
-    overwrites the previous one - only the difference in size is charged.
+    The resized copy always lives at the same deterministic key, so a redelivered
+    S3 event overwrites the previous one rather than accumulating - only the
+    difference in size is charged, which also makes a duplicate callback harmless.
     """
     previous = image.resized_size_bytes or 0
     delta = resized_size_bytes - previous
@@ -90,11 +96,10 @@ def _apply_resize_result(
     if image.uploaded_by_id is not None and not quota_service.has_room(
         db, image.project_id, image.uploaded_by_id, delta
     ):
-        # The Lambda has already overwritten the object at resized_key, so the
-        # previous resized copy (if any) is gone and can't be restored. Drop back
-        # to "stored" so the row matches storage instead of pointing at bytes
-        # that no longer exist - the original is untouched, so a smaller resize
-        # can simply be requested again.
+        # The Lambda has already written the object at resized_key, so delete it
+        # and drop back to "stored": the row then matches storage instead of
+        # pointing at bytes that are over quota. The original is untouched and
+        # still downloadable, so the image stays usable at full size.
         get_image_storage().delete(resized_key)
         image.status = ImageStatus.stored
         image.resized_size_bytes = None
@@ -119,51 +124,46 @@ def _apply_resize_result(
     return image
 
 
-def resize_image(db: Session, image: Image, *, width: int, height: int) -> Image:
-    """Invokes the resize Lambda synchronously and applies its result.
+def finalize_image(
+    db: Session,
+    image_id: int,
+    *,
+    resized_size_bytes: int | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    failed: bool = False,
+) -> Image:
+    """Records the outcome of a resize, called from the Lambda's callback.
 
-    The original is kept as the resize source, so this can be re-run at different
-    dimensions without compounding quality loss. Both copies count against quota.
+    This is the only path that promotes an image to "ready": the resize runs
+    asynchronously off an S3 event, long after the upload request has returned,
+    so the function reports back here instead of the app waiting on it.
+
+    The resized object is already in S3 by the time this runs - the Lambda writes
+    it before calling back - so the key is rebuilt rather than passed in.
     """
-    if not image.original_storage_key:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Image has no stored original to resize.")
+    image = db.query(Image).filter(Image.id == image_id).first()
+    if image is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Image not found")
 
-    storage = get_image_storage()
-    resized_key = build_resized_key(image.project_id, image.id, image.filename)
-
-    try:
-        result = get_resize_lambda_client().resize(
-            bucket=storage.bucket,
-            source_key=image.original_storage_key,
-            target_key=resized_key,
-            filename=image.filename,
-            width=width,
-            height=height,
-        )
-    except ResizeInvocationError as exc:
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, f"Resize service unavailable: {exc}"
-        ) from exc
-
-    if not result.ok:
-        # The Lambda couldn't decode the stored original. Terminal for this image:
-        # retrying would fail the same way, so mark it rather than leave it looking
-        # resizable. The original is kept so it can still be downloaded.
+    if failed:
         image.status = ImageStatus.rejected
         db.commit()
         db.refresh(image)
+        return image
+
+    if resized_size_bytes is None:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"Image could not be resized: {result.error}",
+            status.HTTP_400_BAD_REQUEST, "resized_size_bytes is required when failed=false"
         )
 
     return _apply_resize_result(
         db,
         image,
-        resized_key=resized_key,
-        resized_size_bytes=result.resized_size_bytes,
-        width=result.width,
-        height=result.height,
+        resized_key=build_resized_key(image.project_id, image.id, image.filename),
+        resized_size_bytes=resized_size_bytes,
+        width=width,
+        height=height,
     )
 
 

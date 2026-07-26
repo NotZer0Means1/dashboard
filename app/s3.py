@@ -2,6 +2,19 @@ from pathlib import Path
 
 from app.config import get_settings
 
+# Everything a project owns lives under one prefix, so the bucket browses by
+# project rather than by file type, and deleting a project is a prefix sweep.
+#
+# It is also what the resize Lambda's S3 notification filters on. That filter
+# cannot use wildcards, so it matches this whole subtree - documents and resized
+# copies included - and the handler discards the keys that aren't originals. See
+# infra/aws/README.md.
+PROJECTS_PREFIX = "projects"
+
+
+def project_prefix(project_id: int) -> str:
+    return f"{PROJECTS_PREFIX}/{project_id}"
+
 
 def sanitize_filename(filename: str, fallback: str) -> str:
     return Path(filename).name.strip() or fallback

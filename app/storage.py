@@ -1,10 +1,13 @@
 from functools import lru_cache
 
-from app.s3 import S3ObjectStore, sanitize_filename
+from app.s3 import S3ObjectStore, project_prefix, sanitize_filename
 
 
 def _build_key(project_id: int, document_id: int, filename: str) -> str:
-    return f"{project_id}/{document_id}/{sanitize_filename(filename, 'document')}"
+    # projects/{project_id}/documents/{document_id}/{filename} - the sibling of
+    # the images subtree, so a project is one folder in the bucket.
+    safe = sanitize_filename(filename, "document")
+    return f"{project_prefix(project_id)}/documents/{document_id}/{safe}"
 
 
 class S3DocumentStorage(S3ObjectStore):
@@ -17,7 +20,7 @@ class S3DocumentStorage(S3ObjectStore):
         self.put(storage_key, content)
 
     def delete_project_dir(self, project_id: int) -> None:
-        self.delete_prefix(f"{project_id}/")
+        self.delete_prefix(f"{project_prefix(project_id)}/documents/")
 
 
 @lru_cache
