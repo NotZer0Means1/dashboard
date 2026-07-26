@@ -179,24 +179,72 @@ def get_image_for_user(db: Session, image_id: int, user: User) -> Image:
     return image
 
 
-def read_image_content(image: Image) -> bytes:
+def read_image_content(image: Image, *, original: bool = False) -> bytes:
     """Serves the resized copy once one exists, and the original until then.
 
     An unresized image is a normal, downloadable image - only a rejected one has
     nothing usable to serve.
+
+    original=True asks for the full-size upload regardless of whether a resized
+    copy exists. It is kept after a resize and charged against quota (see
+    quota_service), so this is what makes that charge honest - otherwise the
+    project pays for bytes nothing can reach.
     """
     if image.status == ImageStatus.rejected:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Image was rejected and has no usable content."
         )
-    key = image.storage_key or image.original_storage_key
+    if original:
+        key = image.original_storage_key
+    else:
+        key = image.storage_key or image.original_storage_key
     if not key:
         raise HTTPException(status.HTTP_409_CONFLICT, "Image has no stored content.")
     return get_image_storage().read(key)
 
 
-def delete_image(db: Session, image: Image) -> None:
+def delete_image(db: Session, image: Image, *, copy: str = "all") -> None:
+    """Deletes the whole image, or just one of its two stored copies.
+
+    A resized image occupies S3 twice and is charged for both (see quota_service),
+    so either copy may be the one worth freeing: drop the resized copy to go back
+    to serving the full-size original, or drop the original once the resized copy
+    is the only one you still need. "all" removes both objects and the row.
+
+    Nothing re-resizes an image - that only happens on upload - so deleting the
+    resized copy is a one-way door, not a step in a re-resize.
+    """
     storage = get_image_storage()
+
+    if copy == "resized":
+        if not image.storage_key:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Image has no resized copy to delete.")
+        storage.delete(image.storage_key)
+        image.storage_key = None
+        image.resized_size_bytes = None
+        image.width = None
+        image.height = None
+        image.status = ImageStatus.stored
+        db.commit()
+        return
+
+    if copy == "original":
+        if not image.original_storage_key:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Image has no stored original to delete.")
+        if not image.storage_key:
+            # Would leave a row that can serve nothing at all. Deleting the whole
+            # image is the honest way to express that.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Deleting the original would leave nothing to serve. Delete the image instead.",
+            )
+        storage.delete(image.original_storage_key)
+        image.original_storage_key = ""
+        # The bytes are gone, so the project must stop being charged for them.
+        image.size_bytes = 0
+        db.commit()
+        return
+
     if image.original_storage_key:
         storage.delete(image.original_storage_key)
     if image.storage_key:

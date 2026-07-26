@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from typing import Literal
+
+from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -44,14 +46,37 @@ def get_image_info(image: Image = Depends(get_image_for_user)) -> ImageOut:
 
 
 @router.get("/image/{image_id}")
-def download_image(image: Image = Depends(get_image_for_user)) -> Response:
-    content = image_service.read_image_content(image)
+def download_image(
+    original: bool = Query(
+        False, description="Serve the full-size upload instead of the resized copy"
+    ),
+    image: Image = Depends(get_image_for_user),
+) -> Response:
+    """Serves the resized copy once one exists, the original until then.
+
+    Pass original=true to always get the full-size upload - it is retained after
+    a resize and counts against quota, so it stays reachable.
+    """
+    content = image_service.read_image_content(image, original=original)
     return attachment_response(content, image.content_type, image.filename)
 
 
 @router.delete("/image/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_image(
+    copy: Literal["all", "original", "resized"] = Query(
+        "all",
+        description=(
+            "Which stored copy to remove. 'all' deletes both and the image itself; "
+            "'original' and 'resized' free one copy's quota and keep the image."
+        ),
+    ),
     image: Image = Depends(get_image_for_user),
     db: Session = Depends(get_db),
 ) -> None:
-    image_service.delete_image(db, image)
+    """Deletes the image, or just one of its two copies.
+
+    A resized image is stored twice and charged twice, so either copy can be
+    freed on its own. Deleting the resized copy returns the image to status
+    "stored" and it will not be resized again - that only happens on upload.
+    """
+    image_service.delete_image(db, image, copy=copy)
